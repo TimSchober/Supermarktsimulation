@@ -15,19 +15,19 @@ def my_print(msg):
 # print on console and into customer log
 # k: customer name
 # s: station name
-def my_print1(k, s, msg):
+def my_print1(k, station_name, msg):
     t = EvQueue.time
-    print(str(round(t, 4)) + ':' + k + ' ' + msg + ' at ' + s)
-    fc.write(str(round(t, 4)) + ':' + k + ' ' + msg + ' at ' + s + '\n')
+    print(str(round(t, 4)) + ':' + k + ' ' + msg + ' at ' + station_name)
+    fc.write(str(round(t, 4)) + ':' + k + ' ' + msg + ' at ' + station_name + '\n')
 
 
 # print on console and into station log
 # s: station_name
 # name: customer name
-def my_print2(s, msg, name):
+def my_print2(station_name, msg, name):
     t = EvQueue.time
-    # print(str(round(t,4))+':'+s+' '+msg)
-    fs.write(str(round(t, 4)) + ':' + s + ' ' + msg + ' ' + name + '\n')
+    print(str(round(t, 4)) + ':' + station_name + ' ' + msg)
+    fs.write(str(round(t, 4)) + ':' + station_name + ' ' + msg + ' ' + name + '\n')
 
 
 # class consists of instance variables:
@@ -67,20 +67,20 @@ class EvQueue:
         heapq.heapify(self.q)
         while self.q:
             entry = self.pop()
-            self.time = entry[0]
+            EvQueue.evCount += 1
+            EvQueue.time = entry[0]
             work = entry[3]
             station = work[2]
-            costumer = work[3]
-            if costumer.set_next_work():
-                ev = Ev(self.time + work[1], costumer.run, prio=1)
-                self.push(ev)
-            if station.has_items_in_queue() and not station.get_is_busy():
-                new_costumer = station.remove_customer_from_queue()
-                ev = Ev(self.time + work[1], new_costumer[0].run, prio=1)
-                self.push(ev)
+            customer = work[3]
 
-            print(str(entry[0]) + "; " + str(entry[1]) + "; " + str(entry[2]) + ";:; " + str(work[0]) + "; " + str(work[1]) + "; " + str(station.name) + "; " + str(costumer.name))
-            self.evCount += 1
+            ev_list = customer.work()
+
+            if ev_list is not None:
+                for ev in ev_list:
+                    self.push(ev)
+
+            print(str(entry[0]) + "; " + str(entry[1]) + "; " + str(entry[2]) + ";:; " + str(work[0]) + "; " +
+                  str(work[1]) + "; " + str(station.name) + "; " + str(customer.name))
 
 
 # class consists of
@@ -89,34 +89,71 @@ class EvQueue:
 # delay_per_item: service time
 # CustomerWaiting, busy: possible states of this station
 class Station:
-    buffer = deque()
-    is_busy = False
-    current_waiting_time = 0
 
     def __init__(self, time_per_item, station_name):
         self.name = station_name
         self.delay_per_item = time_per_item
+        self.buffer = deque()
+        self.state = 'idle'  # idle, busy
+        self.current_waiting_time = 0
+        self.customer_start_time = 0
 
     def has_items_in_queue(self):
-        return True if self.buffer else False
+        if self.buffer:
+            return True
+        else:
+            return False
 
-    def get_is_busy(self):
-        return self.is_busy
+    def add_to_current_waiting_time(self, val):
+        self.current_waiting_time = self.current_waiting_time + val
+        # print(self.name + " add " + str(val) + " Now: " + str(self.current_waiting_time))
 
-    def set_is_busy(self, new_state):
-        self.is_busy = new_state
-
-    def get_waiting_time(self):
-        return self.current_waiting_time
+    def remove_from_current_waiting_time(self, val):
+        self.current_waiting_time = self.current_waiting_time - val
+        # print(self.name + " remove " + str(val) + " Now: " + str(self.current_waiting_time))
 
     def add_customer_to_queue(self, customer):
-        self.buffer.append((customer, self.current_waiting_time))
-        self.current_waiting_time += customer.run[1] * self.delay_per_item
+        self.buffer.append(customer)
+        self.add_to_current_waiting_time(customer.current_time_needed)
 
     def remove_customer_from_queue(self):
         customer = self.buffer.popleft()
-        self.current_waiting_time -= customer[0].run[1] * self.delay_per_item
         return customer
+
+    def put_in_queue(self, customer):
+        if self.state == 'busy' or self.has_items_in_queue():
+            if Customer.Simulation_with_drop and \
+                    self.current_waiting_time - (EvQueue.time - self.customer_start_time) > customer.current_max_time:
+                customer.set_next_work()
+                customer.last_station_time_needed = 0
+                ev = Ev(EvQueue.time, customer.run, prio=1)
+                Customer.dropped[self.name] += 1
+                customer.jumped_station = True
+                return ev
+            self.add_customer_to_queue(customer)
+            return None
+        else:
+            self.state = 'busy'
+            self.customer_start_time = EvQueue.time
+            self.add_to_current_waiting_time(customer.current_time_needed)
+            time_for_this_event = customer.current_time_needed
+            customer.set_next_work()
+            ev = Ev(EvQueue.time + time_for_this_event, customer.run, prio=1)
+            return ev
+
+    def finished(self, customer):
+        Customer.served[self.name] += 1
+        self.remove_from_current_waiting_time(customer.last_station_time_needed)
+        if self.has_items_in_queue():
+            cust = self.remove_customer_from_queue()
+            self.customer_start_time = EvQueue.time
+            time_for_this_event = cust.current_time_needed
+            cust.set_next_work()
+            ev = Ev(EvQueue.time + time_for_this_event, cust.run, prio=1)
+            return ev
+        else:
+            self.state = 'idle'
+            return None
 
 
 # class consists of
@@ -129,47 +166,82 @@ class Customer:
     duration = 0
     duration_cond_complete = 0
     count = 0
-    possible_work = ["go_to_station", "buy_at_station", "wait", "jump"]
+    possible_work = ["leave_station", "arrive_at_station", "begin", "exit"]
+    Simulation_with_drop = True
 
     def __init__(self, einkaufsliste, name, time):
-        self.count += 1
+        Customer.count += 1
         self.run = None
+        self.current_objective = None
+        self.current_time_needed = None
+        self.current_station = None
+        self.current_max_time = None
+        self.last_station_time_needed = None
         self.work_list = deque()
         self.einkaufsliste = list(einkaufsliste)
         self.name = name
         self.time = time
+        self.jumped_station = False
         self.begin()
-        self.set_next_work()
 
     def begin(self):
-        for work in self.einkaufsliste:  # what to do, how long, station, customer
-            self.work_list.append((self.possible_work[0], work[0], work[1], self))
-            self.work_list.append((self.possible_work[1], work[2] * work[1].delay_per_item, work[1], self))
-
-    def set_next_work(self) -> bool:
-        if not self.work_list:
-            self.complete += 1
-            return False
-        else:
-            next_val = self.work_list.popleft()
-            if self.run is not None:
-                if next_val[0] == "buy_at_station" and next_val[2].get_is_busy():
-                    next_val[2].add_customer_to_queue(next_val[3])
-                    self.run = next_val
-                    return False
-                elif next_val[0] == "buy_at_station":
-                    next_val[2].set_is_busy(True)
-
-                if self.run[0] == "go_to_station":
-                    self.run = next_val
-                elif self.run[0] == "buy_at_station":
-                    self.run[2].set_is_busy(False)
-                    self.served[self.run[2].name] += 1
-                    self.run = next_val
+        prev_station = None
+        for work in self.einkaufsliste:  # what to do, how long, station, customer, max_wait_time
+            if prev_station is None:
+                self.work_list.append((Customer.possible_work[2], work[0], work[1], self, 0))
+                self.work_list.append((Customer.possible_work[1], work[1].delay_per_item * work[2],
+                                       work[1], self, work[3]))
             else:
-                self.run = next_val
-            return True
-# einkaufsliste1 = [(10, baecker, 10, 10), (30, metzger, 5, 10), (45, kaese, 3, 5), (60, kasse, 30, 20)] # timeT, obj, anzN, notsurpasstimeW
+                self.work_list.append((Customer.possible_work[0], work[0], prev_station, self, 0))
+                self.work_list.append((Customer.possible_work[1], work[1].delay_per_item * work[2],
+                                       work[1], self, work[3]))
+            prev_station = work[1]
+
+        self.run = self.work_list.popleft()
+        self.current_objective = self.run[0]
+        self.current_time_needed = self.run[1]
+        self.current_station = self.run[2]
+        self.current_max_time = self.run[4]
+
+    def set_next_work(self):
+        if self.current_time_needed is not None:
+            self.last_station_time_needed = self.current_time_needed
+        if not self.work_list:
+            self.run = (Customer.possible_work[3], 0, self.run[2], self.run[3], 0)
+        else:
+            self.run = self.work_list.popleft()
+        self.current_objective = self.run[0]
+        self.current_time_needed = self.run[1]
+        self.current_station = self.run[2]
+        self.current_max_time = self.run[4]
+
+    def work(self):
+
+        event_list = []
+
+        if self.current_objective == Customer.possible_work[3]:
+            ev = self.current_station.finished(self)
+            if ev is not None:
+                event_list.append(ev)
+            Customer.duration += EvQueue.time - self.time
+            if not self.jumped_station:
+                Customer.duration_cond_complete += EvQueue.time - self.time
+                Customer.complete += 1
+        elif self.current_objective == Customer.possible_work[1]:
+            ev = self.current_station.put_in_queue(self)
+            if ev is not None:
+                event_list.append(ev)
+        elif self.current_objective == Customer.possible_work[0] or self.current_objective == Customer.possible_work[2]:
+            if not self.current_objective == Customer.possible_work[2]:
+                ev = self.current_station.finished(self)
+                if ev is not None:
+                    event_list.append(ev)
+            time_for_this_ev = self.current_time_needed
+            self.set_next_work()
+            next_ev = Ev(EvQueue.time + time_for_this_ev, self.run, prio=1)
+            event_list.append(next_ev)
+
+        return event_list
 
 
 def reset():
@@ -195,6 +267,7 @@ def startCustomers(einkaufsliste, name, sT, dT, mT):
 
 
 evQ = EvQueue()
+
 baecker = Station(10, 'Bäcker')
 metzger = Station(30, 'Metzger')
 kaese = Station(60, 'Käse')
@@ -203,13 +276,9 @@ kasse = Station(5, 'Kasse')
 reset()
 
 einkaufsliste1 = [(10, baecker, 10, 10), (30, metzger, 5, 10), (45, kaese, 3, 5), (60, kasse, 30, 20)]
-einkaufsliste2 = [(30, metzger, 2, 5), (30, kasse, 3, 20), (20, baecker, 3, 20)] # timeT, obj, anzN, notsurpasstimeW
-# startCustomers(einkaufsliste1, 'A', 0, 200, 30 * 60 + 1)
-# startCustomers(einkaufsliste2, 'B', 1, 60, 30 * 60 + 1)
-
-# Test
-startCustomers(einkaufsliste1, 'A', 0, 200, 400)
-startCustomers(einkaufsliste2, 'B', 1, 60, 400)
+einkaufsliste2 = [(30, metzger, 2, 5), (30, kasse, 3, 20), (20, baecker, 3, 20)]  # timeT, obj, anzN, notsurpasstimeW
+startCustomers(einkaufsliste1, 'A', 0, 200, 30 * 60 + 1)
+startCustomers(einkaufsliste2, 'B', 1, 60, 30 * 60 + 1)
 
 evQ.start()
 
