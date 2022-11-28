@@ -1,5 +1,7 @@
 from collections import deque
 import heapq
+import threading
+import time
 
 f = open("supermarkt.txt", "w")
 fc = open("supermarkt_customer.txt", "w")
@@ -12,91 +14,48 @@ def my_print(msg):
     f.write(msg + '\n')
 
 
-# print on console and into customer log
-# k: customer name
-# s: station name
-def my_print1(k, station_name, msg):
-    t = EvQueue.time
-    print(str(round(t, 4)) + ':' + k + ' ' + msg + ' at ' + station_name)
-    fc.write(str(round(t, 4)) + ':' + k + ' ' + msg + ' at ' + station_name + '\n')
-
-
-# print on console and into station log
-# s: station_name
-# name: customer name
-def my_print2(station_name, msg, name):
-    t = EvQueue.time
-    print(str(round(t, 4)) + ':' + station_name + ' ' + msg)
-    fs.write(str(round(t, 4)) + ':' + station_name + ' ' + msg + ' ' + name + '\n')
-
-
-# class consists of instance variables:
-# t: time stamp
-# work: job to be done
-# args: list of arguments for job to be done
-# prio: used to give leaving, being served, and arrival different priorities
-class Ev:
-    counter = 0
-
-    def __init__(self, t, work, args=(), prio=255):
-        self.t = t
-        self.n = Ev.counter
-        self.work = work
-        self.args = args
-        self.prio = prio
-        Ev.counter += 1
-
-
-# class consists of
-# q: event queue
-# time: current time
-# evCount: counter of all popped events
-# methods push, pop, and start as described in the problem description
-class EvQueue:
-    q = []
-    time = 0
-    evCount = 0
-
-    def push(self, event):
-        heapq.heappush(self.q, (event.t, event.prio, event.n, event.work, event.args))
-
-    def pop(self):
-        return heapq.heappop(self.q)
-
-    def start(self):
-        heapq.heapify(self.q)
-        while self.q:
-            entry = self.pop()
-            EvQueue.evCount += 1
-            EvQueue.time = entry[0]
-            work = entry[3]
-            station = work[2]
-            customer = work[3]
-
-            ev_list = customer.work()
-
-            if ev_list is not None:
-                for ev in ev_list:
-                    self.push(ev)
-
-            print(str(entry[0]) + "; " + str(entry[1]) + "; " + str(entry[2]) + ";:; " + str(work[0]) + "; " +
-                  str(work[1]) + "; " + str(station.name) + "; " + str(customer.name))
-
-
 # class consists of
 # name: station name
 # buffer: customer queue
 # delay_per_item: service time
 # CustomerWaiting, busy: possible states of this station
-class Station:
+class Station(threading.Thread):
 
     def __init__(self, time_per_item, station_name):
+        threading.Thread.__init__(self)
         self.name = station_name
         self.delay_per_item = time_per_item
         self.buffer = deque()
         self.state = 'idle'  # idle, busy
         self.current_waiting_time = 0
         self.customer_start_time = 0
+        self.customer_waiting_event = threading.Event()
+
+    def run(self):
+        self.wait_for_customer()
+
+    def wait_for_customer(self):
+        while True:
+            self.customer_waiting_event.clear()
+            print(self.name + " now waiting")
+            self.customer_waiting_event.wait()
+            print(self.name + " now serving")
+            self.serve_customer()
+
+    def customer_arrived(self, customer):
+        print(customer.name + " arrived at " + self.name)
+        serv_event = threading.Event()
+        self.add_customer_to_queue(customer, serv_event)
+        self.customer_waiting_event.set()
+        serv_event.wait()
+
+    def serve_customer(self):
+        while self.has_items_in_queue():
+            customer, serv_event = self.remove_customer_from_queue()
+            print(self.name + " serve for " + str(customer.current_time_needed) + "s")
+            time.sleep(customer.current_time_needed)
+            self.remove_from_current_waiting_time(customer.current_time_needed)
+            serv_event.set()
 
     def has_items_in_queue(self):
         if self.buffer:
@@ -112,66 +71,68 @@ class Station:
         self.current_waiting_time = self.current_waiting_time - val
         # print(self.name + " remove " + str(val) + " Now: " + str(self.current_waiting_time))
 
-    def add_customer_to_queue(self, customer):
-        self.buffer.append(customer)
+    def add_customer_to_queue(self, customer, serv_event):
+        self.buffer.append((customer, serv_event))
         self.add_to_current_waiting_time(customer.current_time_needed)
 
     def remove_customer_from_queue(self):
-        customer = self.buffer.popleft()
-        return customer
+        customer, serv_event = self.buffer.popleft()
+        return customer, serv_event
 
-    def put_in_queue(self, customer):
-        if self.state == 'busy' or self.has_items_in_queue():
-            if Customer.Simulation_with_drop and \
-                    self.current_waiting_time - (EvQueue.time - self.customer_start_time) > customer.current_max_time:
-                customer.set_next_work()
-                customer.last_station_time_needed = 0
-                ev = Ev(EvQueue.time, customer.run, prio=1)
-                Customer.dropped[self.name] += 1
-                customer.jumped_station = True
-                return ev
-            self.add_customer_to_queue(customer)
-            return None
-        else:
-            self.state = 'busy'
-            self.customer_start_time = EvQueue.time
-            self.add_to_current_waiting_time(customer.current_time_needed)
-            time_for_this_event = customer.current_time_needed
-            customer.set_next_work()
-            ev = Ev(EvQueue.time + time_for_this_event, customer.run, prio=1)
-            return ev
-
-    def finished(self, customer):
-        Customer.served[self.name] += 1
-        self.remove_from_current_waiting_time(customer.last_station_time_needed)
-        if self.has_items_in_queue():
-            cust = self.remove_customer_from_queue()
-            self.customer_start_time = EvQueue.time
-            time_for_this_event = cust.current_time_needed
-            cust.set_next_work()
-            ev = Ev(EvQueue.time + time_for_this_event, cust.run, prio=1)
-            return ev
-        else:
-            self.state = 'idle'
-            return None
+    # def put_in_queue(self, customer):
+    #     if self.state == 'busy' or self.has_items_in_queue():
+    #         if Customer.Simulation_with_drop and \
+    #                 self.current_waiting_time - (EvQueue.time - self.customer_start_time) > customer.current_max_time:
+    #             customer.set_next_work()
+    #             customer.last_station_time_needed = 0
+    #             ev = Ev(EvQueue.time, customer.crun, prio=1)
+    #             Customer.dropped[self.name] += 1
+    #             customer.jumped_station = True
+    #             return ev
+    #         self.add_customer_to_queue(customer)
+    #         return None
+    #     else:
+    #         self.state = 'busy'
+    #         self.customer_start_time = EvQueue.time
+    #         self.add_to_current_waiting_time(customer.current_time_needed)
+    #         time_for_this_event = customer.current_time_needed
+    #         customer.set_next_work()
+    #         ev = Ev(EvQueue.time + time_for_this_event, customer.crun, prio=1)
+    #         return ev
+    #
+    # def finished(self, customer):
+    #     Customer.served[self.name] += 1
+    #     self.remove_from_current_waiting_time(customer.last_station_time_needed)
+    #     if self.has_items_in_queue():
+    #         cust = self.remove_customer_from_queue()
+    #         self.customer_start_time = EvQueue.time
+    #         time_for_this_event = cust.current_time_needed
+    #         cust.set_next_work()
+    #         ev = Ev(EvQueue.time + time_for_this_event, cust.crun, prio=1)
+    #         return ev
+    #     else:
+    #         self.state = 'idle'
+    #         return None
 
 
 # class consists of
 # statistics variables
 # and methods as described in the problem description
-class Customer:
+class Customer(threading.Thread):
     served = dict()
     dropped = dict()
     complete = 0
     duration = 0
     duration_cond_complete = 0
     count = 0
+    end_time = 0
     possible_work = ["leave_station", "arrive_at_station", "begin", "exit"]
     Simulation_with_drop = True
 
     def __init__(self, einkaufsliste, name, time):
+        threading.Thread.__init__(self)
         Customer.count += 1
-        self.run = None
+        self.crun = None
         self.current_objective = None
         self.current_time_needed = None
         self.current_station = None
@@ -182,7 +143,10 @@ class Customer:
         self.name = name
         self.time = time
         self.jumped_station = False
+
+    def run(self):
         self.begin()
+        self.work()
 
     def begin(self):
         prev_station = None
@@ -197,51 +161,46 @@ class Customer:
                                        work[1], self, work[3]))
             prev_station = work[1]
 
-        self.run = self.work_list.popleft()
-        self.current_objective = self.run[0]
-        self.current_time_needed = self.run[1]
-        self.current_station = self.run[2]
-        self.current_max_time = self.run[4]
+        self.crun = self.work_list.popleft()
+        self.current_objective = self.crun[0]
+        self.current_time_needed = self.crun[1]
+        self.current_station = self.crun[2]
+        self.current_max_time = self.crun[4]
 
     def set_next_work(self):
         if self.current_time_needed is not None:
             self.last_station_time_needed = self.current_time_needed
         if not self.work_list:
-            self.run = (Customer.possible_work[3], 0, self.run[2], self.run[3], 0)
+            self.crun = (Customer.possible_work[3], 0, self.crun[2], self.crun[3], 0)
         else:
-            self.run = self.work_list.popleft()
-        self.current_objective = self.run[0]
-        self.current_time_needed = self.run[1]
-        self.current_station = self.run[2]
-        self.current_max_time = self.run[4]
+            self.crun = self.work_list.popleft()
+        self.current_objective = self.crun[0]
+        self.current_time_needed = self.crun[1]
+        self.current_station = self.crun[2]
+        self.current_max_time = self.crun[4]
 
     def work(self):
 
-        event_list = []
-
-        if self.current_objective == Customer.possible_work[3]:
-            ev = self.current_station.finished(self)
-            if ev is not None:
-                event_list.append(ev)
-            Customer.duration += EvQueue.time - self.time
+        if self.current_objective == Customer.possible_work[3]:  # exit
+            complete_time = Customer.end_time - self.time
+            Customer.duration += complete_time
             if not self.jumped_station:
-                Customer.duration_cond_complete += EvQueue.time - self.time
+                Customer.duration_cond_complete += complete_time
                 Customer.complete += 1
-        elif self.current_objective == Customer.possible_work[1]:
-            ev = self.current_station.put_in_queue(self)
-            if ev is not None:
-                event_list.append(ev)
-        elif self.current_objective == Customer.possible_work[0] or self.current_objective == Customer.possible_work[2]:
-            if not self.current_objective == Customer.possible_work[2]:
-                ev = self.current_station.finished(self)
-                if ev is not None:
-                    event_list.append(ev)
-            time_for_this_ev = self.current_time_needed
-            self.set_next_work()
-            next_ev = Ev(EvQueue.time + time_for_this_ev, self.run, prio=1)
-            event_list.append(next_ev)
+            print(self.name + " finished")
+            return
 
-        return event_list
+        elif self.current_objective == Customer.possible_work[1]:  # arrive_at_station
+            self.current_station.customer_arrived(self)
+
+        elif self.current_objective == Customer.possible_work[0] or self.current_objective == Customer.possible_work[2]:
+            # leave_station or begin
+            time_for_this_ev = self.current_time_needed
+            print(self.name + " sleeps for " + str(time_for_this_ev) + "s to get to new station")
+            time.sleep(time_for_this_ev)
+
+        self.set_next_work()
+        self.work()
 
 
 def reset():
@@ -256,33 +215,55 @@ def reset():
 
 
 def startCustomers(einkaufsliste, name, sT, dT, mT):
+    time.sleep(sT)
     i = 1
     t = sT
+    kunde_liste = []
     while t < mT:
         kunde = Customer(list(einkaufsliste), name + str(i), t)
-        ev = Ev(t, kunde.run, prio=1)
-        evQ.push(ev)
+        print(kunde.name + " start")
+        kunde.start()
+        kunde_liste.append(kunde)
+        time.sleep(dT)
+        # ev = Ev(t, kunde.crun, prio=1)
+        # evQ.push(ev)
         i += 1
         t += dT
+    for k in kunde_liste:
+        k.join()
+    Customer.end_time = t
 
 
-evQ = EvQueue()
-
+# evQ = EvQueue()
 baecker = Station(10, 'Bäcker')
 metzger = Station(30, 'Metzger')
 kaese = Station(60, 'Käse')
 kasse = Station(5, 'Kasse')
 
+# start threads
+baecker.start()
+metzger.start()
+kaese.start()
+kasse.start()
+
 reset()
 
 einkaufsliste1 = [(10, baecker, 10, 10), (30, metzger, 5, 10), (45, kaese, 3, 5), (60, kasse, 30, 20)]
 einkaufsliste2 = [(30, metzger, 2, 5), (30, kasse, 3, 20), (20, baecker, 3, 20)]  # timeT, obj, anzN, notsurpasstimeW
-startCustomers(einkaufsliste1, 'A', 0, 200, 30 * 60 + 1)
-startCustomers(einkaufsliste2, 'B', 1, 60, 30 * 60 + 1)
+# startCustomers(einkaufsliste1, 'A', 0, 200, 30 * 60 + 1)
+# startCustomers(einkaufsliste2, 'B', 1, 60, 30 * 60 + 1)
+t1 = threading.Thread(target=startCustomers, args=(einkaufsliste1, 'A', 0, 200, 200), daemon=True)
+t2 = threading.Thread(target=startCustomers, args=(einkaufsliste2, 'B', 1, 60, 60), daemon=True)
 
-evQ.start()
+t1.start()
+t2.start()
 
-my_print('Simulationsende: %is' % EvQueue.time)
+t1.join()
+t2.join()
+
+# evQ.start()
+
+my_print('Simulationsende: %is' % Customer.end_time)
 my_print('Anzahl Kunden: %i' % Customer.count)
 my_print('Anzahl vollständige Einkäufe %i' % Customer.complete)
 x = Customer.duration / Customer.count
