@@ -27,9 +27,7 @@ class Station(threading.Thread):
         self.name = station_name
         self.delay_per_item = time_per_item
         self.buffer = deque()
-        self.state = 'idle'  # idle, busy
         self.current_waiting_time = 0
-        self.customer_start_time = 0
         self.customer_waiting_event = threading.Event()
 
     def run(self):
@@ -45,10 +43,19 @@ class Station(threading.Thread):
 
     def customer_arrived(self, customer):
         print(customer.name + " arrived at " + self.name)
-        serv_event = threading.Event()
-        self.add_customer_to_queue(customer, serv_event)
-        self.customer_waiting_event.set()
-        serv_event.wait()
+        if customer.current_max_time < self.current_waiting_time and Customer.Simulation_with_drop:
+            customer.set_next_work()
+            Customer.dropped_lock.acquire()
+            Customer.dropped[self.name] += 1
+            Customer.dropped_lock.release()
+        else:
+            serv_event = threading.Event()
+            self.add_customer_to_queue(customer, serv_event)
+            self.customer_waiting_event.set()
+            Customer.served_lock.acquire()
+            Customer.served[self.name] += 1
+            Customer.served_lock.release()
+            serv_event.wait()
 
     def serve_customer(self):
         while self.has_items_in_queue():
@@ -272,8 +279,8 @@ einkaufsliste1 = [(10, baecker, 10, 10), (30, metzger, 5, 10), (45, kaese, 3, 5)
 einkaufsliste2 = [(30, metzger, 2, 5), (30, kasse, 3, 20), (20, baecker, 3, 20)]  # timeT, obj, anzN, notsurpasstimeW
 # startCustomers(einkaufsliste1, 'A', 0, 200, 30 * 60 + 1)
 # startCustomers(einkaufsliste2, 'B', 1, 60, 30 * 60 + 1)
-t1 = threading.Thread(target=startCustomers, args=(einkaufsliste1, 'A', 0, 200, 60), daemon=True)
-t2 = threading.Thread(target=startCustomers, args=(einkaufsliste2, 'B', 1, 60, 60), daemon=True)
+t1 = threading.Thread(target=startCustomers, args=(einkaufsliste1, 'A', 0, 200, 30 * 60 + 1), daemon=True)
+t2 = threading.Thread(target=startCustomers, args=(einkaufsliste2, 'B', 1, 60, 30 * 60 + 1), daemon=True)
 
 t1.start()
 t2.start()
