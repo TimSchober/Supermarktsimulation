@@ -2,6 +2,7 @@ from collections import deque
 import heapq
 import threading
 import time
+from datetime import datetime
 
 f = open("supermarkt.txt", "w")
 fc = open("supermarkt_customer.txt", "w")
@@ -53,7 +54,7 @@ class Station(threading.Thread):
         while self.has_items_in_queue():
             customer, serv_event = self.remove_customer_from_queue()
             print(self.name + " serve for " + str(customer.current_time_needed) + "s")
-            time.sleep(customer.current_time_needed)
+            time.sleep(customer.current_time_needed * Customer.fast_Simulation)
             self.remove_from_current_waiting_time(customer.current_time_needed)
             serv_event.set()
 
@@ -119,19 +120,27 @@ class Station(threading.Thread):
 # statistics variables
 # and methods as described in the problem description
 class Customer(threading.Thread):
+    served_lock = threading.Lock()
     served = dict()
+    dropped_lock = threading.Lock()
     dropped = dict()
+    complete_lock = threading.Lock()
     complete = 0
+    duration_lock = threading.Lock()
     duration = 0
+    duration_cond_lock = threading.Lock()
     duration_cond_complete = 0
+    count_lock = threading.Lock()
     count = 0
-    end_time = 0
     possible_work = ["leave_station", "arrive_at_station", "begin", "exit"]
     Simulation_with_drop = True
+    fast_Simulation = 0.001
 
-    def __init__(self, einkaufsliste, name, time):
+    def __init__(self, einkaufsliste, name):
         threading.Thread.__init__(self)
+        Customer.count_lock.acquire()
         Customer.count += 1
+        Customer.count_lock.release()
         self.crun = None
         self.current_objective = None
         self.current_time_needed = None
@@ -141,7 +150,7 @@ class Customer(threading.Thread):
         self.work_list = deque()
         self.einkaufsliste = list(einkaufsliste)
         self.name = name
-        self.time = time
+        self.time = datetime.now()
         self.jumped_station = False
 
     def run(self):
@@ -182,11 +191,20 @@ class Customer(threading.Thread):
     def work(self):
 
         if self.current_objective == Customer.possible_work[3]:  # exit
-            complete_time = Customer.end_time - self.time
+            now = datetime.now()
+            complete_time = (now.hour - self.time.hour) * 60 * 60 + (now.minute - self.time.minute) * 60 + \
+                            (now.second - self.time.second)
+            print(complete_time)
+            Customer.duration_lock.acquire()
             Customer.duration += complete_time
+            Customer.duration_lock.release()
             if not self.jumped_station:
+                Customer.duration_cond_lock.acquire()
                 Customer.duration_cond_complete += complete_time
+                Customer.duration_cond_lock.release()
+                Customer.complete_lock.acquire()
                 Customer.complete += 1
+                Customer.complete_lock.release()
             print(self.name + " finished")
             return
 
@@ -197,7 +215,7 @@ class Customer(threading.Thread):
             # leave_station or begin
             time_for_this_ev = self.current_time_needed
             print(self.name + " sleeps for " + str(time_for_this_ev) + "s to get to new station")
-            time.sleep(time_for_this_ev)
+            time.sleep(time_for_this_ev * Customer.fast_Simulation)
 
         self.set_next_work()
         self.work()
@@ -215,16 +233,16 @@ def reset():
 
 
 def startCustomers(einkaufsliste, name, sT, dT, mT):
-    time.sleep(sT)
+    time.sleep(sT * Customer.fast_Simulation)
     i = 1
     t = sT
     kunde_liste = []
     while t < mT:
-        kunde = Customer(list(einkaufsliste), name + str(i), t)
+        kunde = Customer(list(einkaufsliste), name + str(i))
         print(kunde.name + " start")
         kunde.start()
         kunde_liste.append(kunde)
-        time.sleep(dT)
+        time.sleep(dT * Customer.fast_Simulation)
         # ev = Ev(t, kunde.crun, prio=1)
         # evQ.push(ev)
         i += 1
@@ -248,11 +266,13 @@ kasse.start()
 
 reset()
 
+start_time = datetime.now()
+
 einkaufsliste1 = [(10, baecker, 10, 10), (30, metzger, 5, 10), (45, kaese, 3, 5), (60, kasse, 30, 20)]
 einkaufsliste2 = [(30, metzger, 2, 5), (30, kasse, 3, 20), (20, baecker, 3, 20)]  # timeT, obj, anzN, notsurpasstimeW
 # startCustomers(einkaufsliste1, 'A', 0, 200, 30 * 60 + 1)
 # startCustomers(einkaufsliste2, 'B', 1, 60, 30 * 60 + 1)
-t1 = threading.Thread(target=startCustomers, args=(einkaufsliste1, 'A', 0, 200, 200), daemon=True)
+t1 = threading.Thread(target=startCustomers, args=(einkaufsliste1, 'A', 0, 200, 60), daemon=True)
 t2 = threading.Thread(target=startCustomers, args=(einkaufsliste2, 'B', 1, 60, 60), daemon=True)
 
 t1.start()
@@ -263,7 +283,11 @@ t2.join()
 
 # evQ.start()
 
-my_print('Simulationsende: %is' % Customer.end_time)
+end_time = datetime.now()
+
+my_print('Simulationsende: ' + str(end_time.hour - start_time.hour) + "hours " + \
+         str(end_time.minute - start_time.minute) \
+         + "minutes " + str(end_time.second - start_time.second) + "seconds")
 my_print('Anzahl Kunden: %i' % Customer.count)
 my_print('Anzahl vollständige Einkäufe %i' % Customer.complete)
 x = Customer.duration / Customer.count
